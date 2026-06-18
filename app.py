@@ -3,7 +3,7 @@ import os
 import streamlit as st
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -19,9 +19,29 @@ from langchain_groq import ChatGroq
 
 CORPUS_PATH = "./zyro-dynamics-hr-corpus"
 
-# Set your Groq API key as environment variable
-# For Streamlit Cloud use st.secrets["GROQ_API_KEY"]
-os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+# --------------------------------------------------
+# PAGE CONFIG
+# --------------------------------------------------
+
+st.set_page_config(
+    page_title="Zyro Dynamics HR Help Desk",
+    page_icon="🏢"
+)
+
+st.title("🏢 Zyro Dynamics HR Help Desk")
+
+# --------------------------------------------------
+# API KEY
+# --------------------------------------------------
+
+groq_key = (
+    st.secrets.get("GROQ_API_KEY")
+    or os.environ.get("GROQ_API_KEY")
+)
+
+if not groq_key:
+    st.error("GROQ_API_KEY not found")
+    st.stop()
 
 # --------------------------------------------------
 # LLM
@@ -29,23 +49,28 @@ os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
 
 llm = ChatGroq(
     model="llama-3.3-70b-versatile",
-    temperature=0.1,
-    max_tokens=1024
+    temperature=0,
+    max_tokens=512,
+    api_key=groq_key
 )
 
 # --------------------------------------------------
-# PROMPTS
+# PROMPT
 # --------------------------------------------------
 
 RAG_PROMPT = ChatPromptTemplate.from_template(
 '''
-You are Zyro Dynamics HR Assistant.
+You are the official HR Assistant for Zyro Dynamics.
 
-Use ONLY the information in the provided context.
+Rules:
 
-If the answer is not present in the context, respond exactly:
+1. Answer ONLY from the provided context.
+2. Do not use external knowledge.
+3. Extract exact values, dates, durations and percentages.
+4. Mention policy source whenever possible.
+5. If answer is unavailable, respond exactly:
 
-"I could not find this information in the Zyro Dynamics HR policy documents."
+I cannot answer this based on the available HR policy documents.
 
 Context:
 {context}
@@ -58,7 +83,28 @@ Answer:
 )
 
 # --------------------------------------------------
-# LOAD AND INDEX DOCUMENTS
+# OUT OF SCOPE CHECK
+# --------------------------------------------------
+
+OOS_PROMPT = ChatPromptTemplate.from_template(
+'''
+Determine whether the question is related to Zyro Dynamics HR policies.
+
+Respond ONLY with:
+
+IN_SCOPE
+
+or
+
+OUT_OF_SCOPE
+
+Question:
+{question}
+'''
+)
+
+# --------------------------------------------------
+# VECTOR DATABASE
 # --------------------------------------------------
 
 @st.cache_resource
@@ -74,17 +120,24 @@ def build_rag():
                 os.path.join(CORPUS_PATH, file)
             )
 
-            docs.extend(loader.load())
+            loaded_docs = loader.load()
+
+            for d in loaded_docs:
+                d.metadata["file_name"] = file
+
+            docs.extend(loaded_docs)
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
+        chunk_size=700,
+        chunk_overlap=150
     )
 
     chunks = splitter.split_documents(docs)
 
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+        model_name="BAAI/bge-small-en-v1.5",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True}
     )
 
     vectorstore = FAISS.from_documents(
@@ -93,7 +146,12 @@ def build_rag():
     )
 
     retriever = vectorstore.as_retriever(
-        search_kwargs={"k": 5}
+        search_type="mmr",
+        search_kwargs={
+            "k": 8,
+            "fetch_k": 20,
+            "lambda_mult": 0.5
+        }
     )
 
     return retriever
@@ -101,16 +159,36 @@ def build_rag():
 retriever = build_rag()
 
 # --------------------------------------------------
-# HELPER FUNCTIONS
+# HELPERS
 # --------------------------------------------------
 
 def format_docs(docs):
 
     return "\\n\\n".join(
-        doc.page_content for doc in docs
+        [
+            f"Source: {doc.metadata.get('file_name', 'Unknown')}\\n{doc.page_content}"
+            for doc in docs
+        ]
     )
 
 def ask_bot(question):
+
+    guard_chain = (
+        OOS_PROMPT
+        | llm
+        | StrOutputParser()
+    )
+
+    scope = guard_chain.invoke(
+        {"question": question}
+    )
+
+    if scope.strip() != "IN_SCOPE":
+
+        return (
+            "I can only answer questions related to Zyro Dynamics HR policies.",
+            []
+        )
 
     docs = retriever.invoke(question)
 
@@ -129,19 +207,8 @@ def ask_bot(question):
     return answer, docs
 
 # --------------------------------------------------
-# STREAMLIT UI
+# CHAT HISTORY
 # --------------------------------------------------
-
-st.set_page_config(
-    page_title="Zyro Dynamics HR Help Desk",
-    page_icon="🏢"
-)
-
-st.title("🏢 Zyro Dynamics HR Help Desk")
-
-st.markdown(
-    "Ask questions about company policies, leave, benefits, WFH, onboarding, performance reviews and more."
-)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -151,8 +218,12 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# --------------------------------------------------
+# USER INPUT
+# --------------------------------------------------
+
 prompt = st.chat_input(
-    "Ask an HR question..."
+    "Ask your HR question..."
 )
 
 if prompt:
@@ -167,7 +238,9 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    with st.spinner("Searching HR policies..."):
+    with st.spinner(
+        "Searching HR policies..."
+    ):
 
         answer, docs = ask_bot(prompt)
 
@@ -175,17 +248,23 @@ if prompt:
 
         st.markdown(answer)
 
-        with st.expander("Sources"):
+        if docs:
 
-            for i, doc in enumerate(docs[:3], start=1):
+            with st.expander("Sources"):
 
-                st.markdown(
-                    f"### Source {i}"
+                source_files = list(
+                    set(
+                        doc.metadata.get(
+                            "file_name",
+                            "Unknown"
+                        )
+                        for doc in docs
+                    )
                 )
 
-                st.write(
-                    doc.page_content[:700]
-                )
+                for file in source_files:
+
+                    st.write(f"• {file}")
 
     st.session_state.messages.append(
         {
@@ -195,7 +274,7 @@ if prompt:
     )
 """
 
-with open("app.py", "w") as f:
+with open("app.py", "w", encoding="utf-8") as f:
     f.write(app_code)
 
 print("app.py created successfully!")
