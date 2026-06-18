@@ -208,59 +208,69 @@ if prompt := st.chat_input("Ask your HR question..."):
 
             retriever, llm, rag_prompt, oos_prompt, format_docs = load_pipeline()
     if not contains_hr_keyword(prompt):
-    
+
+    answer = (
+        "I can only answer questions about Zyro Dynamics HR policies "
+        "from the provided documents."
+    )
+
+    sources = []
+
+else:
+
+    guard_chain = oos_prompt | llm | StrOutputParser()
+
+    guard_result = guard_chain.invoke(
+        {"question": prompt}
+    )
+
+    if guard_result.strip().upper() != "IN_SCOPE":
+
         answer = (
             "I can only answer questions about Zyro Dynamics HR policies "
             "from the provided documents."
         )
-    
-        sources = []
-    
-    else:
-    
-        guard_chain = oos_prompt | llm | StrOutputParser()
-    
-        guard_result = guard_chain.invoke(
-            {"question": prompt}
-        )
-    
-        if guard_result.strip().upper() != "IN_SCOPE":
-    
-            answer = (
-                "I can only answer questions about Zyro Dynamics HR policies "
-                "from the provided documents."
-            )
 
-            sources = []
-    
-        else:
-            docs = retriever.invoke(prompt)
-    
-            context = format_docs(docs)
-    
-            chain = rag_prompt | llm | StrOutputParser()
-    
-            answer = chain.invoke({
-                "context": context,
-                "question": prompt
-            })
-    
-            sources = list(set(
+        sources = []
+
+    else:
+
+        docs = retriever.invoke(prompt)
+
+        context = format_docs(docs)
+
+        chain = rag_prompt | llm | StrOutputParser()
+
+        answer = chain.invoke({
+            "context": context,
+            "question": prompt
+        })
+
+        sources = list(
+            set(
                 d.metadata.get("source", "Unknown")
                 for d in docs
-            ))
-
-            st.markdown(answer)
-
-            if sources:
-                with st.expander("Sources"):
-                    for s in sources:
-                        st.write(f"- {os.path.basename(s)}")
-
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer,
-                    "sources": sources,
-                }
             )
+        )
+
+# SHOW ANSWER FOR BOTH RIGHT AND WRONG QUESTIONS
+
+st.markdown(answer)
+
+if sources:
+
+    with st.expander("Sources"):
+
+        for s in sources:
+
+            st.write(
+                f"- {os.path.basename(s)}"
+            )
+
+st.session_state.messages.append(
+    {
+        "role": "assistant",
+        "content": answer,
+        "sources": sources,
+    }
+)
