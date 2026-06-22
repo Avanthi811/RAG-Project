@@ -9,7 +9,7 @@ from langchain_groq import ChatGroq
 
 st.set_page_config(page_title="Zyro Dynamics HR Help Desk", page_icon="💼")
 
-CORPUS_PATH = "/mount/src/zyro-dynamics-hr-corpus"  # change after upload if needed
+CORPUS_PATH = "zyro-dynamics-hr-corpus"  # change if needed
 
 @st.cache_resource
 def build_bot():
@@ -40,7 +40,7 @@ def build_bot():
     )
 
     rag_prompt = ChatPromptTemplate.from_template(
-        \"\"\"You are an HR assistant for Zyro Dynamics.
+        '''You are an HR assistant for Zyro Dynamics.
 Use ONLY the context from the HR policy documents to answer the employee's question.
 If the answer is not in the documents, say you don't know and suggest contacting HR.
 
@@ -50,11 +50,11 @@ Context:
 Question:
 {question}
 
-Answer clearly and concisely in 3–5 sentences.\"\"\"
+Answer clearly and concisely in 3–5 sentences.'''
     )
 
     oos_prompt = ChatPromptTemplate.from_template(
-        \"\"\"You are an HR guardrail classifier for Zyro Dynamics.
+        '''You are an HR guardrail classifier for Zyro Dynamics.
 Decide if the user question is about Zyro HR policies, benefits, leave, payroll, attendance,
 work-from-home, working hours, performance appraisal, or similar internal HR topics.
 
@@ -62,7 +62,7 @@ Question:
 {question}
 
 If the question is about Zyro HR policies, answer exactly: IN_SCOPE.
-If it is not about Zyro HR policies, answer exactly: OUT_OF_SCOPE.\"\"\"
+If it is not about Zyro HR policies, answer exactly: OUT_OF_SCOPE.'''
     )
 
     refusal_message = (
@@ -124,6 +124,6 @@ for speaker, text in st.session_state.chat_history:
     st.markdown(f"**{speaker}:** {text}")
 
 with open("app.py", "w") as f:
-    f.write(app_code.strip())
+    f.write(app_code)
 
 print("app.py created.")
