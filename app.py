@@ -1,16 +1,7 @@
 import streamlit as st
-from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
-from cryptography.fernet import Fernet
-import os
 
-# NOTE: In your deployed app, you should reconstruct the same pipeline.
-# For simplicity here, we assume objects 'retriever', 'llm', and 'rag_chain', 'ask_bot'
-# are available or re-created similarly.
+# We assume ask_bot is available from your backend code
+# (i.e., the same logic as in the notebook).
 
 st.title("Zyro Dynamics HR Help Desk")
 
@@ -18,7 +9,7 @@ st.write("Ask any question about Zyro Dynamics HR policies.")
 
 user_question = st.text_input("Your question")
 
-if 'chat_history' not in st.session_state:
+if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 if st.button("Ask") and user_question.strip():
