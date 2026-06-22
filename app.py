@@ -1,6 +1,5 @@
 import os
 import streamlit as st
-
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -8,14 +7,12 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 
-CORPUS_PATH = "./zyro-dynamics-hr-corpus"  # change if needed
-
 st.set_page_config(page_title="Zyro Dynamics HR Help Desk", page_icon="💼")
-st.title("Zyro Dynamics HR Help Desk")
-st.write("Ask any question about Zyro Dynamics HR policies.")
+
+CORPUS_PATH = "/mount/src/zyro-dynamics-hr-corpus"  # change after upload if needed
 
 @st.cache_resource
-def build_pipeline():
+def build_bot():
     loader = PyPDFDirectoryLoader(CORPUS_PATH)
     documents = loader.load()
 
@@ -43,7 +40,7 @@ def build_pipeline():
     )
 
     rag_prompt = ChatPromptTemplate.from_template(
-        '''You are an HR assistant for Zyro Dynamics.
+        \"\"\"You are an HR assistant for Zyro Dynamics.
 Use ONLY the context from the HR policy documents to answer the employee's question.
 If the answer is not in the documents, say you don't know and suggest contacting HR.
 
@@ -53,11 +50,11 @@ Context:
 Question:
 {question}
 
-Answer clearly and concisely in 3–5 sentences.'''
+Answer clearly and concisely in 3–5 sentences.\"\"\"
     )
 
     oos_prompt = ChatPromptTemplate.from_template(
-        '''You are an HR guardrail classifier for Zyro Dynamics.
+        \"\"\"You are an HR guardrail classifier for Zyro Dynamics.
 Decide if the user question is about Zyro HR policies, benefits, leave, payroll, attendance,
 work-from-home, working hours, performance appraisal, or similar internal HR topics.
 
@@ -65,7 +62,7 @@ Question:
 {question}
 
 If the question is about Zyro HR policies, answer exactly: IN_SCOPE.
-If it is not about Zyro HR policies, answer exactly: OUT_OF_SCOPE.'''
+If it is not about Zyro HR policies, answer exactly: OUT_OF_SCOPE.\"\"\"
     )
 
     refusal_message = (
@@ -99,8 +96,11 @@ If it is not about Zyro HR policies, answer exactly: OUT_OF_SCOPE.'''
 
     return ask_bot
 
+st.title("Zyro Dynamics HR Help Desk")
+st.write("Ask any question about Zyro Dynamics HR policies.")
+
 try:
-    ask_bot = build_pipeline()
+    ask_bot = build_bot()
 except Exception as e:
     st.error(f"Startup error: {e}")
     st.stop()
