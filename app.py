@@ -122,8 +122,3 @@ if st.button("Ask") and user_question.strip():
 st.markdown("### Conversation")
 for speaker, text in st.session_state.chat_history:
     st.markdown(f"**{speaker}:** {text}")
-
-with open("app.py", "w") as f:
-    f.write(app_code)
-
-print("app.py created.")
