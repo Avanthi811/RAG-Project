@@ -50,8 +50,8 @@ def build_pipeline():
     os.environ["GROQ_API_KEY"]      = st.secrets["GROQ_API_KEY"]
     os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
 
-    # Target directory for local setup and deployment
-    pdf_files = glob.glob("hr_docs/*.pdf")
+    # UPDATED: Pointing directly to your 'zyro-dynamics-hr-corpus' folder
+    pdf_files = glob.glob("zyro-dynamics-hr-corpus/*.pdf")
     documents = []
     
     for pdf_path in sorted(pdf_files):
@@ -62,14 +62,14 @@ def build_pipeline():
             st.warning(f"Skipping unreadable file {os.path.basename(pdf_path)}: {e}")
 
     if not documents:
-        st.error("No PDF documents found in 'hr_docs/' folder. Please place policy PDFs there.")
+        st.error("No PDF documents found in 'zyro-dynamics-hr-corpus/' folder. Please ensure the path is correct.")
         st.stop()
 
     # Highly optimized splitter strategy to prevent losing context across sentence breaks
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=250)
     chunks   = splitter.split_documents(documents)
 
-    # Embed chunks using an production-standard lightweight model
+    # Embed chunks using a production-standard lightweight model
     embeddings  = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(chunks, embeddings)
     
@@ -79,8 +79,8 @@ def build_pipeline():
         search_kwargs={"k": 5, "fetch_k": 15}
     )
 
-    # Use llama-3.1-8b-instant or llama-3.3-70b-versatile based on subscription rules
-    llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.1, max_tokens=512)
+    # Use the high-accuracy Llama model
+    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1, max_tokens=512)
     return retriever, llm
 
 def format_docs(docs):
@@ -99,11 +99,8 @@ def rag_chain(question, retriever, llm):
 @st.cache_data(show_spinner=False)
 @traceable(name="ask_bot")
 def ask_bot(question, _retriever, _llm):
-    check_prompt = OOS_PROMPT.format(question=question)
-    check_response = _llm.invoke(check_prompt)
-    
-    # Adaptive Fallback: Pass to RAG pipeline regardless to crosscheck context facts, 
-    # preventing false-negatives from blocking edge-case valid HR queries.
+    # Adaptive Fallback: Pass directly to RAG pipeline to prevent false-negatives 
+    # from blocking edge-case valid HR queries.
     return rag_chain(question, _retriever, _llm)
 
 # ── USER INTERFACE (STREAMLIT) ──────────────────────────────
