@@ -1,36 +1,124 @@
 import os
+import glob
 import streamlit as st
-from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
+from langsmith import traceable
 
-st.set_page_config(page_title="Zyro Dynamics HR Help Desk", page_icon="💼")
+# ─────────────────────────────────────────────────────────────
+# Streamlit Config
+# ─────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Zyro Dynamics HR Help Desk",
+    page_icon="🏢",
+    layout="centered"
+)
 
-CORPUS_PATH = "zyro-dynamics-hr-corpus"  # change if needed
+# ─────────────────────────────────────────────────────────────
+# LangSmith Tracing
+# ─────────────────────────────────────────────────────────────
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_PROJECT"] = "zyro-rag-challenge"
 
-@st.cache_resource
-def build_bot():
-    loader = PyPDFDirectoryLoader(CORPUS_PATH)
-    documents = loader.load()
+# ─────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────
+REFUSAL_MESSAGE = (
+    "I am sorry, I can only answer HR-related questions based on "
+    "Zyro Dynamics policy documents. Please contact your HR team "
+    "for other queries."
+)
+
+RAG_PROMPT = ChatPromptTemplate.from_template("""
+You are a precise HR assistant for Zyro Dynamics.
+
+Answer the employee question using ONLY the context provided below.
+
+Rules:
+1. Do not use outside knowledge.
+2. Be professional and concise.
+3. If the answer is not found in the context, respond exactly with:
+"I am sorry, I can only answer HR-related questions based on Zyro Dynamics policy documents. Please contact your HR team for other queries."
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+""")
+
+OOS_PROMPT = ChatPromptTemplate.from_template("""
+You are a security classifier.
+
+Determine whether the question is related to:
+- HR policies
+- Leave policies
+- Employee benefits
+- Company procedures
+- Internal employee guidelines
+
+Reply with ONLY:
+yes
+or
+no
+
+Question:
+{question}
+""")
+
+# ─────────────────────────────────────────────────────────────
+# Build RAG Pipeline
+# ─────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner="Loading HR documents and building knowledge base...")
+def build_pipeline():
+
+    os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+    os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
+
+    pdf_files = glob.glob("hr_docs/*.pdf")
+
+    if not pdf_files:
+        st.error("No PDF files found in the 'hr_docs' folder.")
+        st.stop()
+
+    documents = []
+
+    for pdf_path in sorted(pdf_files):
+        loader = PyPDFLoader(pdf_path)
+        documents.extend(loader.load())
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=200,
-        separators=["\\n\\n", "\\n", " ", ""]
+        chunk_size=1000,
+        chunk_overlap=250
     )
+
     chunks = splitter.split_documents(documents)
+
+    if not chunks:
+        st.error("No document chunks were created.")
+        st.stop()
 
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    vectorstore = FAISS.from_documents(chunks, embeddings)
+    vectorstore = FAISS.from_documents(
+        chunks,
+        embeddings
+    )
+
     retriever = vectorstore.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 5}
+        search_type="mmr",
+        search_kwargs={
+            "k": 5,
+            "fetch_k": 15
+        }
     )
 
     llm = ChatGroq(
@@ -39,86 +127,123 @@ def build_bot():
         max_tokens=512
     )
 
-    rag_prompt = ChatPromptTemplate.from_template(
-        '''You are an HR assistant for Zyro Dynamics.
-Use ONLY the context from the HR policy documents to answer the employee's question.
-If the answer is not in the documents, say you don't know and suggest contacting HR.
+    return retriever, llm
 
-Context:
-{context}
 
-Question:
-{question}
+# ─────────────────────────────────────────────────────────────
+# Helper Function
+# ─────────────────────────────────────────────────────────────
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
-Answer clearly and concisely in 3–5 sentences.'''
+
+# ─────────────────────────────────────────────────────────────
+# RAG Chain
+# ─────────────────────────────────────────────────────────────
+@traceable(name="rag_chain")
+def rag_chain(question, retriever, llm):
+
+    docs = retriever.invoke(question)
+
+    if not docs:
+        return {
+            "answer": REFUSAL_MESSAGE,
+            "sources": []
+        }
+
+    context = format_docs(docs)
+
+    prompt = RAG_PROMPT.format(
+        context=context,
+        question=question
     )
 
-    oos_prompt = ChatPromptTemplate.from_template(
-        '''You are an HR guardrail classifier for Zyro Dynamics.
-Decide if the user question is about Zyro HR policies, benefits, leave, payroll, attendance,
-work-from-home, working hours, performance appraisal, or similar internal HR topics.
+    response = llm.invoke(prompt)
 
-Question:
-{question}
+    sources = list({
+        os.path.basename(
+            doc.metadata.get("source", "Unknown")
+        )
+        for doc in docs
+    })
 
-If the question is about Zyro HR policies, answer exactly: IN_SCOPE.
-If it is not about Zyro HR policies, answer exactly: OUT_OF_SCOPE.'''
+    return {
+        "answer": response.content.strip(),
+        "sources": sources
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# Main Bot Logic
+# ─────────────────────────────────────────────────────────────
+@traceable(name="ask_bot")
+def ask_bot(question, retriever, llm):
+
+    check_prompt = OOS_PROMPT.format(
+        question=question
     )
 
-    refusal_message = (
-        "I am designed only to answer questions about Zyro Dynamics HR policies. "
-        "Your question appears to be outside this scope. "
-        "Please contact the relevant support team for non-HR queries."
-    )
+    classification = llm.invoke(
+        check_prompt
+    ).content.strip().lower()
 
-    def format_docs(docs):
-        return "\\n\\n".join(doc.page_content for doc in docs)
+    if classification == "yes":
+        return rag_chain(
+            question,
+            retriever,
+            llm
+        )
 
-    def rag_chain(question: str):
-        docs = retriever.invoke(question)
-        context = format_docs(docs)
-        prompt = rag_prompt.format(context=context, question=question)
-        response = llm.invoke(prompt)
-        if hasattr(response, "content"):
-            return response.content
-        return str(response)
+    return {
+        "answer": REFUSAL_MESSAGE,
+        "sources": []
+    }
 
-    def ask_bot(question: str):
-        cls_prompt = oos_prompt.format(question=question)
-        cls_resp = llm.invoke(cls_prompt)
-        label = cls_resp.content.strip().upper()
 
-        if label == "OUT_OF_SCOPE":
-            return {"answer": refusal_message, "scope": "out_of_scope"}
+# ─────────────────────────────────────────────────────────────
+# UI
+# ─────────────────────────────────────────────────────────────
+st.title("🏢 Zyro Dynamics HR Help Desk")
+st.caption("Ask any HR policy question — powered by RAG")
 
-        answer_text = rag_chain(question)
-        return {"answer": answer_text, "scope": "in_scope"}
+retriever, llm = build_pipeline()
 
-    return ask_bot
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-st.title("Zyro Dynamics HR Help Desk")
-st.write("Ask any question about Zyro Dynamics HR policies.")
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-try:
-    ask_bot = build_bot()
-except Exception as e:
-    st.error(f"Startup error: {e}")
-    st.stop()
+question = st.chat_input("Ask an HR question...")
 
-user_question = st.text_input("Your question")
+if question:
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+    st.session_state.messages.append({
+        "role": "user",
+        "content": question
+    })
 
-if st.button("Ask") and user_question.strip():
-    try:
-        result = ask_bot(user_question)
-        answer = result["answer"]
-        st.session_state.chat_history.append(("You", user_question))
-        st.session_state.chat_history.append(("Bot", answer))
-    except Exception as e:
-        st.error(f"Error: {e}")
+    with st.chat_message("user"):
+        st.markdown(question)
 
-st.markdown("### Conversation")
-for speaker, text in st.session_state.chat_history:
-    st.markdown(f"**{speaker}:** {text}")
+    with st.chat_message("assistant"):
+
+        with st.spinner("Searching HR policies..."):
+            result = ask_bot(
+                question,
+                retriever,
+                llm
+            )
+
+        st.markdown(result["answer"])
+
+        if result["sources"]:
+            with st.expander("Sources"):
+                for source in result["sources"]:
+                    st.write(f"• {source}")
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": result["answer"]
+    })
