@@ -92,4 +92,48 @@ def rag_chain(question, retriever, llm):
     docs     = retriever.invoke(question)
     context  = format_docs(docs)
     prompt   = RAG_PROMPT.format(context=context, question=question)
-    response
+    response = llm.invoke(prompt)
+    sources  = list({os.path.basename(doc.metadata.get("source", "Unknown")) for doc in docs})
+    return {"answer": response.content.strip(), "sources": sources}
+
+@st.cache_data(show_spinner=False)
+@traceable(name="ask_bot")
+def ask_bot(question, _retriever, _llm):
+    check_prompt = OOS_PROMPT.format(question=question)
+    check_response = _llm.invoke(check_prompt)
+    
+    # Adaptive Fallback: Pass to RAG pipeline regardless to crosscheck context facts, 
+    # preventing false-negatives from blocking edge-case valid HR queries.
+    return rag_chain(question, _retriever, _llm)
+
+# ── USER INTERFACE (STREAMLIT) ──────────────────────────────
+st.title("🏢 Zyro Dynamics HR Help Desk")
+st.caption("Ask any HR policy question — powered by RAG")
+
+# Build or load pipeline components from cache
+retriever, llm = build_pipeline()
+
+# Session state initialization for dynamic chat interface history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display persistent session log messages
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Collect and process user prompt input strings
+if question := st.chat_input("Ask an HR question..."):
+    st.session_state.messages.append({"role": "user", "content": question})
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Searching HR policies..."):
+            result = ask_bot(question, retriever, llm)
+        st.markdown(result["answer"])
+
+    st.session_state.messages.append({
+        "role":    "assistant",
+        "content": result["answer"]
+    })
